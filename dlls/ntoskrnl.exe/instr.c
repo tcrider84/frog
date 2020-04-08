@@ -585,6 +585,56 @@ static BYTE *INSTR_GetOperandAddr( CONTEXT *context, BYTE *instr, int addl_instr
 #undef GET_VAL
 }
 
+#define SET_BIT(x, n, y) x = (x & (~(1 << n))) | (y << n)
+
+/* returns flags to set */
+static void INSTR_cmp(DWORD *flags, BYTE *op1, BYTE op1_len, BYTE *op2, BYTE op2_len)
+{
+    /* extend to full size */
+    DWORD64 op1_ex, op2_ex, utmp, neg_start;
+
+    if (op1_len > 8 || op2_len > op1_len)
+    {
+        ERR("Invalid instruction");
+        return;
+    }
+
+    memset(&neg_start, 0, op1_len);
+
+    switch (op1_len)
+    {
+        case 1: op1_ex = (DWORD64)(*(BYTE *)(op1)); break;
+        case 2: op1_ex = (DWORD64)(*(WORD *)(op1)); break;
+        case 4: op1_ex = (DWORD64)(*(DWORD *)(op1)); break;
+        case 8: op1_ex = (DWORD64)(*(DWORD64 *)(op1)); break;
+        default:
+            FIXME("Unrecognized data length %u\n", op1_len);
+            return;
+    }
+
+    switch (op2_len)
+    {
+        case 1: op2_ex = (DWORD64)(*(BYTE *)(op2)); break;
+        case 2: op2_ex = (DWORD64)(*(WORD *)(op2)); break;
+        case 4: op2_ex = (DWORD64)(*(DWORD *)(op2)); break;
+        case 8: op2_ex = (DWORD64)(*(DWORD64 *)(op2)); break;
+        default:
+            FIXME("Unrecognized data length %u\n", op2_len);
+            return;
+    }
+
+    utmp = op1_ex - op2_ex;
+
+    SET_BIT(*flags, 0, op1_ex < op2_ex);  /* CF */
+    SET_BIT(*flags, 2, 0); /* PF */
+    SET_BIT(*flags, 4, 0); /* AF */
+    SET_BIT(*flags, 6, utmp == 0);    /* ZF */
+    SET_BIT(*flags, 7, utmp > neg_start);     /* SF */
+    SET_BIT(*flags, 11, (op1_ex < neg_start) ? utmp > neg_start : utmp < neg_start ); /* OF */
+
+    return;
+}
+
 
 static void fake_syscall_function(void)
 {
@@ -802,6 +852,43 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
         }
         break;  /* Unable to emulate it */
 
+    case 0x39:
+    {
+        BYTE *data = INSTR_GetOperandAddr(context, &instr[1], prefixlen + 2, long_addr, rex, segprefix, &len);
+        unsigned int data_size = get_op_size( long_op, rex );
+        int reg = REGMODRM_REG( instr[1], rex );
+        int rm = REGMODRM_RM( instr[1], rex );
+        BYTE *op2 = (BYTE *)get_int_reg( context, reg );
+
+        TRACE("cmp %u-byte PTR [%s], %s\n", data_size, reg_names[rm], reg_names[reg]);
+
+        INSTR_cmp(&context->ContextFlags, data, data_size, op2, data_size);
+
+        context->Rip += prefixlen + 2;
+        return ExceptionContinueExecution;
+        break;
+    }
+    case 0x83:
+    {
+        BYTE *data = INSTR_GetOperandAddr(context, &instr[1], prefixlen + 3, long_addr, rex, segprefix, &len);
+        unsigned int data_size = get_op_size( long_op, rex );
+        int reg = REGMODRM_REG( instr[1], rex );
+        int rm = REGMODRM_RM( instr[1], rex );
+
+        switch(reg)
+        {
+        case 0x07: /* cmp */
+        {
+            TRACE("cmp %u-byte PTR [%s], 0x%02x\n", data_size, reg_names[rm], instr[2]);
+
+            INSTR_cmp(&context->ContextFlags, data, data_size, &instr[2], 1);
+
+            context->Rip += prefixlen + 3;
+            return ExceptionContinueExecution;
+        }
+        }
+        break;
+    }
     case 0x8a: /* mov Eb, Gb */
     case 0x8b: /* mov Ev, Gv */
     {
