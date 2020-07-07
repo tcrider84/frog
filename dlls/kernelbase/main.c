@@ -43,9 +43,11 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, LPVOID reserved )
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        TRACE("test\n");
         DisableThreadLibraryCalls( hinst );
         IsWow64Process( GetCurrentProcess(), &is_wow64 );
         init_locale();
+        TRACE("test2\n");
         init_startup_info( NtCurrentTeb()->Peb->ProcessParameters );
     }
     return TRUE;
